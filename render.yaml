@@ -1,5 +1,0 @@
-services:
-  - type: web
-    name: veterinaria-sistema
-    runtime: docker
-    plan: free
