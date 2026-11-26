@@ -9,7 +9,6 @@ $db = new PDO('sqlite:' . $dbFile);
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 
-// Crear tablas si no existen
 $db->exec("
 CREATE TABLE IF NOT EXISTS usuarios (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,7 +72,6 @@ CREATE TABLE IF NOT EXISTS historial (
 );
 ");
 
-// Datos iniciales (Seed)
 if ((int)$db->query("SELECT COUNT(*) FROM usuarios")->fetchColumn() === 0) {
     $db->exec("
         INSERT INTO usuarios (usuario, password, nombre, rol) VALUES
@@ -123,7 +121,6 @@ if ((int)$db->query("SELECT COUNT(*) FROM mascotas")->fetchColumn() === 0) {
 // 2. AUTENTICACIÓN Y CONTROL DE RUTAS
 // ==========================================
 $mensaje = '';
-$tipoMensaje = 'success';
 $qrRecienCreado = null;
 
 if (isset($_GET['logout'])) {
@@ -144,7 +141,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion']) && $_POST['
         exit;
     } else {
         $mensaje = 'Usuario o contraseña incorrectos.';
-        $tipoMensaje = 'error';
     }
 }
 
@@ -157,10 +153,13 @@ $esVet = $usuarioActual && $usuarioActual['rol'] === 'Veterinario';
 if ($usuarioActual && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $accion = $_POST['accion'] ?? '';
 
-    // 3.1 REGISTRAR MASCOTA + INSERCIÓN AUTOMÁTICA EN HISTORIAL
+    // 3.1 REGISTRAR MASCOTA (CON ESPECIE PERSONALIZADA SI ELIGE "OTRO") + HISTORIAL AUTOMÁTICO
     if ($accion === 'crear_mascota') {
         $nombre = trim($_POST['nombre']);
-        $especie = trim($_POST['especie']);
+        $especieSelect = trim($_POST['especie']);
+        $especieOtro = trim($_POST['especie_otro'] ?? '');
+        $especie = ($especieSelect === 'Otro' && $especieOtro !== '') ? $especieOtro : $especieSelect;
+
         $raza = trim($_POST['raza']);
         $edad = trim($_POST['edad']);
         $dueno = trim($_POST['dueno']);
@@ -172,16 +171,15 @@ if ($usuarioActual && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$nombre, $especie, $raza, $edad, $dueno, $telefono, $hoy]);
         $nuevaMascotaId = $db->lastInsertId();
 
-        // Inserción automática en historial clínico
         $motivoAuto = "Registro inicial de mascota ($especie - $raza)";
         $obsAuto = "Ingreso automático al historial clínico. Propietario: $dueno (Tel: $telefono).";
         $stmtHist = $db->prepare("INSERT INTO historial (mascota_id, fecha_atencion, motivo, observaciones, fecha_retorno, atendido_por) VALUES (?, ?, ?, ?, ?, ?)");
         $stmtHist->execute([$nuevaMascotaId, $hoy, $motivoAuto, $obsAuto, $retorno, $usuarioActual['nombre']]);
 
-        $mensaje = "Mascota '$nombre' registrada y agregada automáticamente al Historial Clínico.";
+        $mensaje = "Mascota '$nombre' ($especie) registrada y agregada automáticamente al Historial Clínico.";
     }
 
-    // 3.2 CREAR TRATAMIENTO (CON DETECCIÓN DE PAGO POR QR)
+    // 3.2 CREAR TRATAMIENTO (CON PAGO POR QR)
     if ($accion === 'crear_tratamiento') {
         $mascota_id = (int)$_POST['mascota_id'];
         $servicio_id = (int)$_POST['servicio_id'];
@@ -202,7 +200,6 @@ if ($usuarioActual && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $db->prepare("INSERT INTO tratamientos (mascota_id, servicio_id, metodo_pago_id, diagnostico, medicacion, monto, estado_pago, fecha) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([$mascota_id, $servicio_id, $metodo_pago_id, $diagnostico, $medicacion, $monto, $estado_pago, $hoy]);
 
-        // Registrar también evolución en historial
         $stmtHist = $db->prepare("INSERT INTO historial (mascota_id, fecha_atencion, motivo, observaciones, fecha_retorno, atendido_por) VALUES (?, ?, ?, ?, ?, ?)");
         $stmtHist->execute([
             $mascota_id,
@@ -226,7 +223,7 @@ if ($usuarioActual && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // 3.3 MARCAR TRATAMIENTO COMO PAGADO
+    // 3.3 CONFIRMAR PAGO
     if ($accion === 'pagar_tratamiento') {
         $tid = (int)$_POST['tratamiento_id'];
         $db->prepare("UPDATE tratamientos SET estado_pago = 'Pagado' WHERE id = ?")->execute([$tid]);
@@ -247,7 +244,7 @@ if ($usuarioActual && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $mensaje = "Registro clínico agregado. Próximo control calculado para: $retorno.";
     }
 
-    // 3.5 ACCIONES EXCLUSIVAS DE VETERINARIO (SERVICIOS, MÉTODOS DE PAGO, PERSONAL)
+    // 3.5 ACCIONES EXCLUSIVAS DE VETERINARIO
     if ($esVet && $accion === 'crear_servicio') {
         $stmt = $db->prepare("INSERT INTO servicios (nombre, descripcion, precio, dias_retorno, activo) VALUES (?, ?, ?, ?, 1)");
         $stmt->execute([trim($_POST['nombre']), trim($_POST['descripcion']), (float)$_POST['precio'], (int)$_POST['dias_retorno']]);
@@ -268,7 +265,7 @@ if ($usuarioActual && $_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // ==========================================
-// 4. PANTALLA DE LOGIN SI NO HAY SESIÓN
+// 4. PANTALLA DE LOGIN
 // ==========================================
 if (!$usuarioActual):
     $tabLogin = ($_GET['c'] ?? '') === 'secretaria' ? 'secretaria' : 'veterinario';
@@ -480,7 +477,7 @@ $usuarios = $db->query("SELECT * FROM usuarios ORDER BY id ASC")->fetchAll();
         </div>
     </div>
 
-    <!-- MASCOTAS (REGISTRO AUTOMÁTICO EN HISTORIAL) -->
+    <!-- MASCOTAS (CON OPCIÓN "OTRO" ESPECIFICABLE + HISTORIAL AUTOMÁTICO) -->
     <?php elseif ($vista === 'mascotas'): ?>
     <div class="panel">
         <h2>🐶 Registro de Mascotas</h2>
@@ -488,15 +485,20 @@ $usuarios = $db->query("SELECT * FROM usuarios ORDER BY id ASC")->fetchAll();
         <form method="POST" class="form-grid">
             <input type="hidden" name="accion" value="crear_mascota">
             <div class="field"><label>Nombre de mascota</label><input type="text" name="nombre" placeholder="Ej. Toby" required></div>
-            <div class="field"><label>Especie</label>
-                <select name="especie">
+            <div class="field">
+                <label>Especie</label>
+                <select name="especie" id="selectEspecie" onchange="toggleOtraEspecie()">
                     <option value="Perro">Perro</option>
                     <option value="Gato">Gato</option>
                     <option value="Ave">Ave</option>
-                    <option value="Otro">Otro</option>
+                    <option value="Otro">Otro (especificar animal)</option>
                 </select>
             </div>
-            <div class="field"><label>Raza</label><input type="text" name="raza" placeholder="Ej. Labrador" required></div>
+            <div class="field" id="campoOtraEspecie" style="display:none;">
+                <label>¿Qué animal / especie es?</label>
+                <input type="text" name="especie_otro" id="inputEspecieOtro" placeholder="Ej. Panda, Conejo, Tortuga, Leopardo...">
+            </div>
+            <div class="field"><label>Raza</label><input type="text" name="raza" placeholder="Ej. Labrador / Exótico" required></div>
             <div class="field"><label>Edad</label><input type="text" name="edad" placeholder="Ej. 2 años" required></div>
             <div class="field"><label>Propietario / Dueño</label><input type="text" name="dueno" placeholder="Nombre completo" required></div>
             <div class="field"><label>Teléfono</label><input type="text" name="telefono" placeholder="7XXXXXXX" required></div>
@@ -549,7 +551,7 @@ $usuarios = $db->query("SELECT * FROM usuarios ORDER BY id ASC")->fetchAll();
                 <label>Mascota</label>
                 <select name="mascota_id" required>
                     <?php foreach ($mascotas as $m): ?>
-                        <option value="<?= $m['id'] ?>"><?= htmlspecialchars($m['nombre']) ?> (<?= htmlspecialchars($m['dueno']) ?>)</option>
+                        <option value="<?= $m['id'] ?>"><?= htmlspecialchars($m['nombre']) ?> - <?= htmlspecialchars($m['especie']) ?> (<?= htmlspecialchars($m['dueno']) ?>)</option>
                     <?php endforeach; ?>
                 </select>
             </div>
@@ -581,7 +583,6 @@ $usuarios = $db->query("SELECT * FROM usuarios ORDER BY id ASC")->fetchAll();
             <div class="field" style="justify-content:flex-end;"><button type="submit" class="btn">Registrar Tratamiento</button></div>
         </form>
 
-        <!-- Vista previa instantánea del QR al seleccionar opción QR -->
         <div id="previewQRBox" class="qr-box" style="display:none; margin-top:20px;">
             <div class="qr-brand">altoke</div>
             <div style="font-size:13px; font-weight:600; margin-bottom:8px;">
@@ -642,7 +643,7 @@ $usuarios = $db->query("SELECT * FROM usuarios ORDER BY id ASC")->fetchAll();
                 <label>Mascota</label>
                 <select name="mascota_id" required>
                     <?php foreach ($mascotas as $m): ?>
-                        <option value="<?= $m['id'] ?>"><?= htmlspecialchars($m['nombre']) ?> (<?= htmlspecialchars($m['dueno']) ?>)</option>
+                        <option value="<?= $m['id'] ?>"><?= htmlspecialchars($m['nombre']) ?> - <?= htmlspecialchars($m['especie']) ?> (<?= htmlspecialchars($m['dueno']) ?>)</option>
                     <?php endforeach; ?>
                 </select>
             </div>
@@ -734,7 +735,7 @@ $usuarios = $db->query("SELECT * FROM usuarios ORDER BY id ASC")->fetchAll();
         </table>
     </div>
 
-    <!-- PERSONAL / SECRETARIA (SOLO VETERINARIO) -->
+    <!-- PERSONAL / SECRETARIA -->
     <?php elseif ($vista === 'personal' && $esVet): ?>
     <div class="panel">
         <h2>🧑‍💼 Gestión de Personal (Secretaria y Veterinarios)</h2>
@@ -783,6 +784,23 @@ $usuarios = $db->query("SELECT * FROM usuarios ORDER BY id ASC")->fetchAll();
 </div>
 
 <script>
+function toggleOtraEspecie() {
+    const sel = document.getElementById('selectEspecie');
+    const campo = document.getElementById('campoOtraEspecie');
+    const input = document.getElementById('inputEspecieOtro');
+    if (!sel || !campo || !input) return;
+
+    if (sel.value === 'Otro') {
+        campo.style.display = 'flex';
+        input.required = true;
+        input.focus();
+    } else {
+        campo.style.display = 'none';
+        input.required = false;
+        input.value = '';
+    }
+}
+
 function actualizarVistaQR() {
     const selMetodo = document.getElementById('selectMetodoPago');
     const selServ = document.getElementById('selectServicio');
@@ -809,7 +827,10 @@ function abrirModalQR(mascota, servicio, monto) {
     document.getElementById('modalQR').style.display = 'flex';
 }
 
-document.addEventListener('DOMContentLoaded', actualizarVistaQR);
+document.addEventListener('DOMContentLoaded', () => {
+    toggleOtraEspecie();
+    actualizarVistaQR();
+});
 </script>
 </body>
 </html>
